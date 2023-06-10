@@ -54,8 +54,7 @@
                                  config)}))
 
 (defn task [app-state src-path]
-  (let [task-cursor @(r/cursor app-state [:tasks src-path])]
-    ^{:key src-path} [:> Task (select-keys task-cursor [:label :state :status :spinner])]))
+  ^{:key src-path} [:> Task @(r/cursor app-state [:tasks src-path])])
 
 (defn -main [& args]
   (if (-> args count (< 1))
