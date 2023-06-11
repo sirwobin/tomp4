@@ -12,20 +12,20 @@
             ["cli-spinners$default" :as cli-spinners]))
 
 (defn ->app-state [config]
-  (r/atom {:done-promise (p/deferred)
-           :tasks        (reduce (fn [result [src-path dst-path]]
-                                   (let [src-label (.basename path src-path)]
-                                     (assoc result src-path {:src-path              src-path
-                                                             :dst-path              dst-path
-                                                             :src-basename          src-label
-                                                             :label                 src-label
-                                                             :status                ""
-                                                             :state                 "pending"
-                                                             :frame-total-count     nil
-                                                             :last-ten-fps          (list)
-                                                             :spinner               (.-dots cli-spinners)})))
-                                 (sorted-map)
-                                 config)}))
+  (->> config
+       (reduce (fn [result [src-path dst-path]]
+                 (let [src-label (.basename path src-path)]
+                   (assoc result src-path {:src-path              src-path
+                                           :dst-path              dst-path
+                                           :src-basename          src-label
+                                           :label                 src-label
+                                           :status                ""
+                                           :state                 "pending"
+                                           :frame-total-count     nil
+                                           :last-ten-fps          (list)
+                                           :spinner               (.-dots cli-spinners)})))
+               (sorted-map))
+       r/atom))
 
 (defn get-frame-count [app-state src-path]
   (let [prom           (p/deferred)
@@ -50,19 +50,48 @@
          (take 10))
     coll))
 
+(defn zero-pad [n]
+  (cond
+    (< 9 n)
+    (str n)
+
+    (< 0 n)
+    (str "0" n)
+
+    :else
+    "00"))
+
+(defn seconds->human-readable [s]
+  (let [hours             (int (/ s 3600))
+        remaining-seconds (if (< 0 hours)
+                            (- s (* hours 3600))
+                            s)
+        minutes           (int (/ remaining-seconds 60))
+        seconds           (if (< 0 minutes)
+                            (- (* minutes 60) remaining-seconds)
+                            remaining-seconds)]
+    (cond
+      (< 0 hours)
+      (.format util "%s:%s:%s" (zero-pad hours) (zero-pad minutes) (zero-pad seconds))
+
+      (< 0 minutes)
+      (.format util "%s:%s" (zero-pad minutes) (zero-pad seconds))
+
+      :else
+      (str seconds " seconds"))))
+
 (defn convert-status-update [{:keys [last-ten-fps frame-total-count] :as task-map} frame-processed-count]
   (if (< 2 (count last-ten-fps))
     (let [average-fps      (/ (reduce + last-ten-fps) (count last-ten-fps))
           remaining-frames (- frame-total-count frame-processed-count)
           percent-done     (.toFixed (* (/ frame-processed-count frame-total-count) 100) 1)
           eta-seconds      (int (/ remaining-frames average-fps))]
-      (assoc task-map :status (.format util "%f%% ETA %d seconds" percent-done eta-seconds)))
+      (assoc task-map :status (.format util "ETA %s, %f%% complete, %f average FPS" (seconds->human-readable eta-seconds) percent-done (.toFixed average-fps 1))))
     (assoc task-map :status (.format util "%d/%d frames processed" frame-processed-count frame-total-count))))
 
 (defn convert! [app-state src-path]
-  (println "convert staring for" src-path)
   (let [prom          (p/deferred)
-        encode-cp     (.spawn child-process "ffmpeg" #js ["-i" src-path "-vcodec" "h264" "-acodec" "mp2" "-n" "-progress" "-" "-v" "error" (get-in @app-state [:tasks src-path :dst-path])] {:shell false})
+        encode-cp     (.spawn child-process "ffmpeg" #js ["-i" src-path "-vcodec" "h264" "-acodec" "mp2" "-n" "-progress" "-" "-v" "error" (get-in @app-state [src-path :dst-path])] {:shell false})
         stdout-lines  (.createInterface readline #js {"input" (.-stdout encode-cp)})
         err-buffer    #js []]
     (.on stdout-lines "line" (fn [line]
@@ -71,13 +100,13 @@
                                  (let [fps (-> line
                                                (subs 4)
                                                js/parseFloat)]
-                                   (swap! app-state update-in [:tasks src-path :last-ten-fps] add-non-zero-then-keep-last-ten fps))
-                                 
+                                   (swap! app-state update-in [src-path :last-ten-fps] add-non-zero-then-keep-last-ten fps))
+
                                  (string/starts-with? line "frame=")
                                  (let [frame (-> line
                                                  (subs 6)
                                                  js/parseInt)]
-                                   (swap! app-state update-in [:tasks src-path] convert-status-update frame)))))
+                                   (swap! app-state update src-path convert-status-update frame)))))
     (-> encode-cp
         .-stderr
         (.on "data" (fn [data] (.push err-buffer data))))
@@ -87,36 +116,36 @@
                                 (let [err (-> err-buffer
                                               (.join "")
                                               string/trim)]
-                                  (swap! app-state update-in [:tasks src-path] merge {:state "error" :status err})
+                                  (swap! app-state update src-path merge {:state "error" :status err})
                                   (p/reject! prom err)))))
     prom))
 
 (defn convert-all! [app-state]
-  (p/loop [[src-path & remaining-src-paths] (-> @app-state :tasks keys)]
+  (p/loop [[src-path & remaining-src-paths] (keys @app-state)]
     (cond
       (nil? src-path)
       :finished-frame-counting
 
-      (= (get-in @app-state [:tasks src-path :state]) "error")
+      (= (get-in @app-state [src-path :state]) "error")
       (p/recur remaining-src-paths)
 
       :else
-      (p/let [_               (swap! app-state update-in [:tasks src-path] merge {:state "loading" :status "Calculating frame count"})
+      (p/let [_               (swap! app-state update src-path merge {:state "loading" :status "Calculating frame count"})
               fc-result       (-> (get-frame-count app-state src-path)
                                   (.then  (fn [frame-count]
-                                            (swap! app-state update-in [:tasks src-path] merge {:status (str frame-count " frames") :frame-total-count frame-count})
+                                            (swap! app-state update src-path merge {:status (str frame-count " frames") :frame-total-count frame-count})
                                             frame-count))
                                   (.catch (fn [error]
-                                            (swap! app-state update-in [:tasks src-path] merge {:state "error" :status error})
+                                            (swap! app-state update src-path merge {:state "error" :status error})
                                             :error)))
               convert-promise (when-not (= fc-result :error)
                                 (-> (convert! app-state src-path)
-                                    (.then  #(swap! app-state update-in [:tasks src-path] merge {:state "success" :status (str "todo: calc total time")}))
-                                    (.catch #(swap! app-state update-in [:tasks src-path] merge {:state "error" :status %}))))]
+                                    (.then  #(swap! app-state update src-path merge {:state "success" :status (str "Finished at " (js/Date.))}))
+                                    (.catch #(swap! app-state update src-path merge {:state "error" :status %}))))]
         (p/recur remaining-src-paths)))))
 
 (defn task [app-state src-path]
-  ^{:key src-path} [:> Task @(r/cursor app-state [:tasks src-path])])
+  ^{:key src-path} [:> Task @(r/cursor app-state [src-path])])
 
 (defn -main [& args]
   (if (-> args count (< 1))
@@ -124,18 +153,9 @@
     (p/let [f         (-> args first nbb.core/slurp)
             config    (clojure.edn/read-string f)
             app-state (->app-state config)
-            ink-state (ink/render (r/as-element [:> TaskList (for [src-path (-> @app-state :tasks keys)]
+            ink-state (ink/render (r/as-element [:> TaskList (for [src-path (keys @app-state)]
                                                                ^{:key src-path} [task app-state src-path])]))
             _         (convert-all! app-state)]
       ((.-unmount ink-state))
-      (println "done")
       (js/process.exit 0))))
-      
-
-; https://nodejs.org/api/readline.html
-; https://stackoverflow.com/a/54640326 <- readline example
-; https://github.com/babashka/nbb/blob/main/examples/ink/select-input.cljs
-; https://github.com/vadimdemedes/ink
-; https://github.com/privatenumber/ink-task-list
-; https://reagent-project.github.io/
 
