@@ -1,6 +1,7 @@
 (ns tomp4
   (:require [clojure.edn]
             [clojure.string :as string]
+            [nbb.core]
             [reagent.core :as r]
             [promesa.core :as p]
             ["node:child_process" :as child-process]
@@ -27,7 +28,7 @@
                (sorted-map))
        r/atom))
 
-(defn get-frame-count [app-state src-path]
+(defn get-frame-count [src-path]
   (let [prom           (p/deferred)
         gfc-cp         (.spawn child-process "ffprobe" #js ["-v" "error" "-select_streams" "v:0" "-count_packets" "-show_entries" "stream=nb_read_packets" "-of" "csv=p=0" src-path] {:shell false})
         out-buffer #js []
@@ -124,14 +125,14 @@
   (p/loop [[src-path & remaining-src-paths] (keys @app-state)]
     (cond
       (nil? src-path)
-      :finished-frame-counting
+      :finished-convert-all
 
       (= (get-in @app-state [src-path :state]) "error")
       (p/recur remaining-src-paths)
 
       :else
       (p/let [_               (swap! app-state update src-path merge {:state "loading" :status "Calculating frame count"})
-              fc-result       (-> (get-frame-count app-state src-path)
+              fc-result       (-> (get-frame-count src-path)
                                   (.then  (fn [frame-count]
                                             (swap! app-state update src-path merge {:status (str frame-count " frames") :frame-total-count frame-count})
                                             frame-count))
