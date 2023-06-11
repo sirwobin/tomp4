@@ -86,8 +86,10 @@
     (let [average-fps      (/ (reduce + last-ten-fps) (count last-ten-fps))
           remaining-frames (- frame-total-count frame-processed-count)
           percent-done     (.toFixed (* (/ frame-processed-count frame-total-count) 100) 1)
-          eta-seconds      (int (/ remaining-frames average-fps))]
-      (assoc task-map :status (.format util "ETA %s, %f%% complete, %f average FPS" (seconds->human-readable eta-seconds) percent-done (.toFixed average-fps 1))))
+          eta              (-> (/ remaining-frames average-fps)
+                               int
+                               seconds->human-readable)]
+      (assoc task-map :status (.format util "ETA %s, %f%% complete, %f average FPS" eta percent-done (.toFixed average-fps 1))))
     (assoc task-map :status (.format util "%d/%d frames processed" frame-processed-count frame-total-count))))
 
 (defn convert! [app-state src-path]
