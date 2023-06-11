@@ -1,10 +1,12 @@
 (ns tomp4
   (:require [clojure.edn]
+            [clojure.string :as string]
             [reagent.core :as r]
             [promesa.core :as p]
             ["node:child_process" :as child-process]
             ["node:readline$default" :as readline]
             ["node:path$default" :as path]
+            ["node:util$default" :as util]
             ["ink" :as ink]
             ["ink-task-list" :refer [TaskList Task]]
             ["cli-spinners$default" :as cli-spinners]))
@@ -20,9 +22,7 @@
                                                              :status                ""
                                                              :state                 "pending"
                                                              :frame-total-count     nil
-                                                             :frame-processed-count 0
-                                                             :start-time            nil
-                                                             :end-time              nil
+                                                             :last-ten-fps          (list)
                                                              :spinner               (.-dots cli-spinners)})))
                                  (sorted-map)
                                  config)}))
@@ -44,23 +44,49 @@
                             (p/reject! prom (.join err-buffer "")))))
     prom))
 
+(defn add-non-zero-then-keep-last-ten [coll v]
+  (if-not (or (js/isNaN v) (zero? v))
+    (->> (conj coll v)
+         (take 10))
+    coll))
+
+(defn convert-status-update [{:keys [last-ten-fps frame-total-count] :as task-map} frame-processed-count]
+  (if (< 2 (count last-ten-fps))
+    (let [average-fps      (/ (reduce + last-ten-fps) (count last-ten-fps))
+          remaining-frames (- frame-total-count frame-processed-count)
+          percent-done     (.toFixed (* (/ frame-processed-count frame-total-count) 100) 1)
+          eta-seconds      (int (/ remaining-frames average-fps))]
+      (assoc task-map :status (.format util "%f%% ETA %d seconds" percent-done eta-seconds)))
+    (assoc task-map :status (.format util "%d/%d frames processed" frame-processed-count frame-total-count))))
+
 (defn convert! [app-state src-path]
   (println "convert staring for" src-path)
   (let [prom          (p/deferred)
-        encode-cp     (.spawn child-process "ffmpeg" #js ["-i" src-path "-vcodec" "h264" "-acodec" "mp2" (get-in @app-state [:tasks src-path :dst-path])] {:shell false})
-        line-counter  (r/atom 0)
+        encode-cp     (.spawn child-process "ffmpeg" #js ["-i" src-path "-vcodec" "h264" "-acodec" "mp2" "-n" "-progress" "-" "-v" "error" (get-in @app-state [:tasks src-path :dst-path])] {:shell false})
         stdout-lines  (.createInterface readline #js {"input" (.-stdout encode-cp)})
         err-buffer    #js []]
     (.on stdout-lines "line" (fn [line]
-                               (let [lc (swap! line-counter inc)]
-                                 (println (str lc ": " line)))))
+                               (cond
+                                 (string/starts-with? line "fps=")
+                                 (let [fps (-> line
+                                               (subs 4)
+                                               js/parseFloat)]
+                                   (swap! app-state update-in [:tasks src-path :last-ten-fps] add-non-zero-then-keep-last-ten fps))
+                                 
+                                 (string/starts-with? line "frame=")
+                                 (let [frame (-> line
+                                                 (subs 6)
+                                                 js/parseInt)]
+                                   (swap! app-state update-in [:tasks src-path] convert-status-update frame)))))
     (-> encode-cp
         .-stderr
         (.on "data" (fn [data] (.push err-buffer data))))
     (.on encode-cp "close" (fn [code]
                               (if (zero? code)
                                 (p/resolve! prom :finished-convert)
-                                (let [err (.join err-buffer "")]
+                                (let [err (-> err-buffer
+                                              (.join "")
+                                              string/trim)]
                                   (swap! app-state update-in [:tasks src-path] merge {:state "error" :status err})
                                   (p/reject! prom err)))))
     prom))
