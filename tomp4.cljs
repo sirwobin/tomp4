@@ -99,16 +99,16 @@
     (.on stdout-lines "line" (fn [line]
                                (cond
                                  (string/starts-with? line "fps=")
-                                 (let [fps (-> line
-                                               (subs 4)
-                                               js/parseFloat)]
-                                   (swap! app-state update-in [src-path :last-ten-fps] add-non-zero-then-keep-last-ten fps))
+                                 (as-> line fps
+                                       (subs fps 4)
+                                       (js/parseFloat fps)
+                                       (swap! app-state update-in [src-path :last-ten-fps] add-non-zero-then-keep-last-ten fps))
 
                                  (string/starts-with? line "frame=")
-                                 (let [frame (-> line
-                                                 (subs 6)
-                                                 js/parseInt)]
-                                   (swap! app-state update src-path convert-status-update frame)))))
+                                 (as-> line frame
+                                       (subs frame 6)
+                                       (js/parseInt frame)
+                                       (swap! app-state update src-path convert-status-update frame)))))
     (-> encode-cp
         .-stderr
         (.on "data" (fn [data] (.push err-buffer data))))
