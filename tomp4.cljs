@@ -154,8 +154,10 @@
     (println "usage: tomp4 task.edn  (where the edn file contains a map with source path keys and destination path values)")
     (p/let [tasks-str (-> args first nbb.core/slurp)
             app-state (-> tasks-str clojure.edn/read-string edn->app-state)
-            ink-state (ink/render (r/as-element [:> TaskList (for [src-path (keys @app-state)]
-                                                               ^{:key src-path} [task app-state src-path])]))
+            ink-state (-> [:> TaskList (for [src-path (keys @app-state)]
+                                         ^{:key src-path} [task app-state src-path])]
+                          r/as-element
+                          ink/render)
             _         (convert-all! app-state)]
       ((.-unmount ink-state))
       (js/process.exit 0))))
