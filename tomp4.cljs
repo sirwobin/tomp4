@@ -12,13 +12,12 @@
             ["ink-task-list" :refer [TaskList Task]]
             ["cli-spinners$default" :as cli-spinners]))
 
-(defn ->app-state [config]
+(defn edn->app-state [config]
   (->> config
        (reduce (fn [result [src-path dst-path]]
                  (let [src-label (.basename path src-path)]
                    (assoc result src-path {:src-path              src-path
                                            :dst-path              dst-path
-                                           :src-basename          src-label
                                            :label                 src-label
                                            :status                ""
                                            :state                 "pending"
@@ -153,9 +152,8 @@
 (defn -main [& args]
   (if (-> args count (< 1))
     (println "usage: tomp4 task.edn  (where the edn file contains a map with source path keys and destination path values)")
-    (p/let [f         (-> args first nbb.core/slurp)
-            config    (clojure.edn/read-string f)
-            app-state (->app-state config)
+    (p/let [tasks-str (-> args first nbb.core/slurp)
+            app-state (-> tasks-str clojure.edn/read-string edn->app-state)
             ink-state (ink/render (r/as-element [:> TaskList (for [src-path (keys @app-state)]
                                                                ^{:key src-path} [task app-state src-path])]))
             _         (convert-all! app-state)]
